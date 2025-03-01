@@ -3,9 +3,8 @@ const ytdl = require('youtube-dl-exec');
 const fs = require('fs-extra');
 const path = require('path');
 
-const video1Url = 'https://www.youtube.com/watch?v=0AfdAFneMdM'; // Основное видео
+const video1Url = 'https://www.youtube.com/watch?v=0AfdAFneMdM'; // Замени на реальный ID
 const video2Url = 'https://www.youtube.com/watch?v=XBIaqOm0RKQ'; // Дополнительное видео
-const numSegments = 5; // ✅ Количество частей (можно менять!)
 
 const video1Path = path.join(__dirname, 'video1.mp4');
 const video2Path = path.join(__dirname, 'video2.mp4');
@@ -28,6 +27,7 @@ const ffmpegPath = "C:\\ffmpeg\\bin\\ffmpeg.exe"; // Укажи реальный
 const runFFmpeg = (args) => {
     return new Promise((resolve, reject) => {
         const ffmpeg = spawn(ffmpegPath, args);
+
         ffmpeg.stdout.on('data', (data) => console.log(data.toString()));
         ffmpeg.stderr.on('data', (data) => console.error(data.toString()));
 
@@ -41,6 +41,7 @@ const runFFmpeg = (args) => {
 const getVideoDuration = async (filePath) => {
     return new Promise((resolve, reject) => {
         const ffmpeg = spawn('ffmpeg', ['-i', filePath, '-hide_banner', '-f', 'null', '-']);
+
         let duration = 0;
         ffmpeg.stderr.on('data', (data) => {
             const output = data.toString();
@@ -58,10 +59,13 @@ const getVideoDuration = async (filePath) => {
     });
 };
 
-const splitVideo = async (inputPath, outputPattern, segmentDuration) => {
+const splitVideo = async (inputPath, outputPattern, duration = 60) => {
     fs.ensureDirSync(outputDir);
-    console.log(`Splitting ${inputPath} into ${numSegments} parts (~${segmentDuration.toFixed(2)} sec each)...`);
 
+    const totalDuration = await getVideoDuration(inputPath);
+    const lastSegmentDuration = totalDuration % duration || duration; // Длина последнего сегмента
+
+    console.log(`Splitting ${inputPath} into 1-minute parts...`);
     await runFFmpeg([
         '-i', inputPath,
         '-c:v', 'libx264',
@@ -71,12 +75,14 @@ const splitVideo = async (inputPath, outputPattern, segmentDuration) => {
         '-sc_threshold', '0',
         '-c:a', 'aac',
         '-b:a', '128k',
-        '-force_key_frames', `expr:gte(t,n*${segmentDuration})`,
-        '-segment_time', segmentDuration.toString(),
+        '-force_key_frames', `expr:gte(t,n*${duration})`,
         '-f', 'segment',
+        '-segment_times', Array.from({ length: Math.floor(totalDuration / duration) }, (_, i) => (i + 1) * duration).join(',') + `,${totalDuration}`,
         '-reset_timestamps', '1',
         path.join(outputDir, outputPattern)
     ]);
+
+    console.log(`Splitting completed: last segment duration is ${lastSegmentDuration}s`);
 };
 
 const getVideoParts = (prefix) => {
@@ -103,56 +109,32 @@ const mergeTwoVideos = async (video1, video2, outputPath) => {
     ]);
 };
 
-const cleanUp = async () => {
-    console.log('Cleaning up temporary files...');
-    try {
-        await fs.remove(outputDir); // Удаляем нарезанные куски
-        await fs.remove(video1Path); // Удаляем основное видео
-        await fs.remove(video2Path); // Удаляем дополнительное видео
-        console.log('Cleanup completed.');
-    } catch (error) {
-        console.error('Error during cleanup:', error);
-    }
-};
-
 const processVideos = async () => {
-    try {
-        console.log('Downloading videos...');
-        await downloadVideo(video1Url, video1Path);
-        await downloadVideo(video2Url, video2Path);
+    console.log('Downloading videos...');
+    await downloadVideo(video1Url, video1Path);
+    await downloadVideo(video2Url, video2Path);
 
-        console.log('Getting main video duration...');
-        const mainDuration = await getVideoDuration(video1Path);
-        const segmentDuration = mainDuration / numSegments; // ✅ Средняя длина сегмента
+    console.log('Splitting videos into 1-minute parts...');
+    await splitVideo(video1Path, 'video1_%02d.mp4');
+    await splitVideo(video2Path, 'video2_%02d.mp4');
 
-        console.log(`Total main video duration: ${mainDuration.toFixed(2)} sec`);
-        console.log(`Splitting videos into ${numSegments} parts, each ~${segmentDuration.toFixed(2)} sec`);
+    console.log('Processing video parts...');
+    fs.ensureDirSync(finalOutputDir);
 
-        await splitVideo(video1Path, 'video1_%02d.mp4', segmentDuration);
-        await splitVideo(video2Path, 'video2_%02d.mp4', segmentDuration);
+    const video1Parts = getVideoParts('video1_');
+    let video2Parts = getVideoParts('video2_');
 
-        console.log('Processing video parts...');
-        fs.ensureDirSync(finalOutputDir);
+    console.log(`Video1 has ${video1Parts.length} parts`);
+    console.log(`Video2 has ${video2Parts.length} parts`);
 
-        const video1Parts = getVideoParts('video1_');
-        let video2Parts = getVideoParts('video2_');
-
-        console.log(`Video1 has ${video1Parts.length} parts`);
-        console.log(`Video2 has ${video2Parts.length} parts`);
-
-        for (let i = 0; i < video1Parts.length; i++) {
-            let video2Part = video2Parts[i] || video2Parts[Math.floor(Math.random() * video2Parts.length)];
-            const outputPath = path.join(finalOutputDir, `final_part${i}.mp4`);
-            console.log(`Merging part ${i + 1}/${video1Parts.length}`);
-            await mergeTwoVideos(video1Parts[i], video2Part, outputPath);
-        }
-
-        console.log('Processing completed! All final parts are in:', finalOutputDir);
-
-        await cleanUp();
-    } catch (error) {
-        console.error('Error during processing:', error);
+    for (let i = 0; i < video1Parts.length; i++) {
+        let video2Part = video2Parts[i] || video2Parts[Math.floor(Math.random() * video2Parts.length)];
+        const outputPath = path.join(finalOutputDir, `final_part${i}.mp4`);
+        console.log(`Merging part ${i + 1}/${video1Parts.length}`);
+        await mergeTwoVideos(video1Parts[i], video2Part, outputPath);
     }
+
+    console.log('Processing completed! All final parts are in:', finalOutputDir);
 };
 
 processVideos().catch(console.error);
