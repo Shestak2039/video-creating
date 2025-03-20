@@ -3,31 +3,29 @@ const ytdl = require('youtube-dl-exec');
 const fs = require('fs-extra');
 const path = require('path');
 
-const video1Url = 'https://www.youtube.com/watch?v=0AfdAFneMdM'; // Основное видео
-const video2Url = 'https://www.youtube.com/watch?v=XBIaqOm0RKQ'; // Дополнительное видео
-const numSegments = 5; // ✅ Количество частей (можно менять!)
+const video1Url = 'https://www.youtube.com/watch?v=LnSCCxGqBJw'; // Основное видео
+const video2Url = 'https://www.youtube.com/watch?v=ZtLrNBdXT7M'; // Дополнительное видео
+const numSegments = 13;
 
 const video1Path = path.join(__dirname, 'video1.mp4');
 const video2Path = path.join(__dirname, 'video2.mp4');
 const outputDir = path.join(__dirname, 'output_parts');
-const finalOutputDir = path.join(__dirname, 'final_output');
+const finalOutputDir = path.join(__dirname, 'final_output1');
 
 const downloadVideo = async (url, outputPath) => {
-    console.log(`Downloading: ${url}`);
+    console.log(`Downloading in BEST quality: ${url}`);
     await ytdl(url, {
         output: outputPath,
-        format: 'mp4',
+        format: 'bestvideo[height<=720][fps<=30][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][fps<=30][ext=mp4]',
         mergeOutputFormat: 'mp4',
         noPlaylist: true
     });
     console.log(`Downloaded: ${outputPath}`);
 };
 
-const ffmpegPath = "C:\\ffmpeg\\bin\\ffmpeg.exe"; // Укажи реальный путь
-
 const runFFmpeg = (args) => {
     return new Promise((resolve, reject) => {
-        const ffmpeg = spawn(ffmpegPath, args);
+        const ffmpeg = spawn('ffmpeg', args);
         ffmpeg.stdout.on('data', (data) => console.log(data.toString()));
         ffmpeg.stderr.on('data', (data) => console.error(data.toString()));
 
@@ -87,18 +85,34 @@ const getVideoParts = (prefix) => {
 };
 
 const mergeTwoVideos = async (video1, video2, outputPath) => {
-    console.log(`Merging: ${video1} + ${video2}`);
+    console.log(`Merging (9:16 format): ${video1} + ${video2}`);
+
+    // Финальный размер вертикального видео: 1080x1920
+    const width = 1080;
+    const height = 1920;
+
+    const topHeight = Math.floor(height * 0.4);   // 40% высоты
+    const bottomHeight = height - topHeight;      // 60% высоты
+
     await runFFmpeg([
         '-i', video1,
         '-i', video2,
-        '-filter_complex', '[0:v]scale=1280:720[top]; [1:v]scale=1280:720[bottom]; [top][bottom]vstack=inputs=2[out]',
-        '-map', '[out]',
+        '-filter_complex',
+        `[0:v]scale=${width}:${topHeight}:force_original_aspect_ratio=increase,crop=${width}:${topHeight}[top];` +
+        `[1:v]scale=${width}:${bottomHeight}:force_original_aspect_ratio=increase,crop=${width}:${bottomHeight}[bottom];` +
+        `[top][bottom]vstack=inputs=2[stacked]`,
+        '-map', '[stacked]',
         '-map', '0:a',
         '-c:v', 'libx264',
-        '-crf', '23',
+        '-profile:v', 'baseline',
+        '-level', '3.1',
+        '-pix_fmt', 'yuv420p',
+        '-crf', '28',
         '-preset', 'fast',
         '-c:a', 'aac',
-        '-b:a', '128k',
+        '-b:a', '96k',
+        '-movflags', '+faststart',
+        '-y', // перезаписывать если файл уже есть
         outputPath
     ]);
 };
@@ -106,9 +120,9 @@ const mergeTwoVideos = async (video1, video2, outputPath) => {
 const cleanUp = async () => {
     console.log('Cleaning up temporary files...');
     try {
-        await fs.remove(outputDir); // Удаляем нарезанные куски
-        await fs.remove(video1Path); // Удаляем основное видео
-        await fs.remove(video2Path); // Удаляем дополнительное видео
+        await fs.remove(outputDir);
+        await fs.remove(video1Path);
+        await fs.remove(video2Path);
         console.log('Cleanup completed.');
     } catch (error) {
         console.error('Error during cleanup:', error);
@@ -123,7 +137,7 @@ const processVideos = async () => {
 
         console.log('Getting main video duration...');
         const mainDuration = await getVideoDuration(video1Path);
-        const segmentDuration = mainDuration / numSegments; // ✅ Средняя длина сегмента
+        const segmentDuration = mainDuration / numSegments;
 
         console.log(`Total main video duration: ${mainDuration.toFixed(2)} sec`);
         console.log(`Splitting videos into ${numSegments} parts, each ~${segmentDuration.toFixed(2)} sec`);
